@@ -2,8 +2,8 @@ name: Japan Blue Restock Watch
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
-  workflow_dispatch: {}
+    - cron: '*/15 * * * *'  # Every 15 minutes (UTC)
+  workflow_dispatch:  # Allow manual runs
 
 permissions:
   contents: write

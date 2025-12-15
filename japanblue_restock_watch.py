@@ -369,8 +369,9 @@ def main():
         # Save state
         save_state(args.state_file, current_status, notified)
         
-        # Exit with appropriate code
-        sys.exit(0 if buyable else 1)
+        # Exit with success code (0) for both BUYABLE and NOT_BUYABLE
+        # Only exit with error code (1) for actual failures
+        sys.exit(0)
         
     except requests.RequestException as e:
         print(f"NOT_BUYABLE - Network error: {e}", file=sys.stderr)
