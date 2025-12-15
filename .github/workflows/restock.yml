@@ -52,3 +52,47 @@ jobs:
             echo "No state changes to commit."
           fi
 
+      - name: Notify on failure
+        if: failure()
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          if [ -n "$DISCORD_WEBHOOK_URL" ]; then
+            python3 << 'EOF'
+          import os
+          import json
+          import urllib.request
+          import urllib.error
+          
+          webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
+          if webhook_url:
+              workflow_url = f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{os.environ.get('GITHUB_REPOSITORY')}/actions/runs/{os.environ.get('GITHUB_RUN_ID')}"
+              
+              content = (
+                  "❌ **Japan Blue Restock Watcher Failed**\n\n"
+                  "The GitHub Actions workflow encountered an error.\n"
+                  "This could be due to:\n"
+                  "- Network/URL connectivity issues\n"
+                  "- Website changes\n"
+                  "- Script errors\n\n"
+                  f"**Workflow Run:** {workflow_url}"
+              )
+              
+              payload = json.dumps({"content": content})
+              data = payload.encode('utf-8')
+              
+              try:
+                  req = urllib.request.Request(
+                      webhook_url,
+                      data=data,
+                      headers={'Content-Type': 'application/json'}
+                  )
+                  with urllib.request.urlopen(req, timeout=10) as response:
+                      print("Discord failure notification sent successfully")
+              except Exception as e:
+                  print(f"Failed to send Discord notification: {e}")
+          EOF
+          else
+            echo "DISCORD_WEBHOOK_URL not set, skipping failure notification"
+          fi
+
