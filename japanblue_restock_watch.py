@@ -25,9 +25,9 @@ load_dotenv()
 # Constants
 DEFAULT_URL = (
     "https://www.japanblue-jeans.com/en_US/archive/j414-14oz-black-classic-straight-selvedge-jeans/"
-    "JBJE14145S_BLK.html?dwopt_JBJE14145A__BLK__33_hemming=HEMMING-01&"
-    "dwvar_JBJE14145S__BLK_color=BLK&dwvar_JBJE14145S__BLK_size=33&"
-    "pid=JBJE14145A_BLK_33&quantity=1"
+    "JBJE14145S_BLK.html?dwopt_JBJE14145A__BLK__28_hemming=HEMMING-01&"
+    "dwvar_JBJE14145S__BLK_color=BLK&dwvar_JBJE14145S__BLK_size=28&"
+    "pid=JBJE14145A_BLK_28&quantity=1"
 )
 
 DEFAULT_STATE_FILE = "restock_state.json"
