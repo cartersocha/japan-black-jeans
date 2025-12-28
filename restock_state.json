@@ -1,19 +1,5 @@
 {
-  "products": {
-    "Japan Blue Jeans - Size 28": {
-      "last_status": "NOT_BUYABLE",
-      "last_checked_at": "2025-12-28T15:56:47.514053",
-      "last_notified_at": null
-    },
-    "Marco Polo Tea - 8oz": {
-      "last_status": "NOT_BUYABLE",
-      "last_checked_at": "2025-12-28T15:56:47.734017",
-      "last_notified_at": null
-    },
-    "Marco Polo Tea - 1oz": {
-      "last_status": "BUYABLE",
-      "last_checked_at": "2025-12-28T15:56:08.609063",
-      "last_notified_at": "2025-12-28T15:56:08.609074"
-    }
-  }
+  "last_status": "NOT_BUYABLE",
+  "last_checked_at": "2025-12-28T23:50:24.169040",
+  "last_notified_at": null
 }
