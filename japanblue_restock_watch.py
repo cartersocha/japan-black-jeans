@@ -9,6 +9,7 @@ sends Discord notifications when status changes from NOT_BUYABLE to BUYABLE.
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime
@@ -23,12 +24,23 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Constants
-DEFAULT_URL = (
-    "https://www.japanblue-jeans.com/en_US/archive/j414-14oz-black-classic-straight-selvedge-jeans/"
-    "JBJE14145S_BLK.html?dwopt_JBJE14145A__BLK__28_hemming=HEMMING-01&"
-    "dwvar_JBJE14145S__BLK_color=BLK&dwvar_JBJE14145S__BLK_size=28&"
-    "pid=JBJE14145A_BLK_28&quantity=1"
-)
+PRODUCTS = [
+    {
+        "name": "Japan Blue Jeans - Size 28",
+        "url": (
+            "https://www.japanblue-jeans.com/en_US/archive/j414-14oz-black-classic-straight-selvedge-jeans/"
+            "JBJE14145S_BLK.html?dwopt_JBJE14145A__BLK__28_hemming=HEMMING-01&"
+            "dwvar_JBJE14145S__BLK_color=BLK&dwvar_JBJE14145S__BLK_size=28&"
+            "pid=JBJE14145A_BLK_28&quantity=1"
+        ),
+        "type": "japanblue"
+    },
+    {
+        "name": "Marco Polo Tea - 8oz",
+        "url": "https://www.theculturedcup.com/products/marco-polo-by-mariage-freres-1?variant=27890666602598",
+        "type": "shopify"
+    }
+]
 
 DEFAULT_STATE_FILE = "restock_state.json"
 MAX_RETRIES = 3
@@ -89,19 +101,129 @@ def fetch_html(url: str, verbose: bool = False) -> str:
     raise last_exception
 
 
-def get_buyable_status(html: str) -> Tuple[bool, str]:
+def get_buyable_status(html: str, product_type: str = "japanblue", url: str = "") -> Tuple[bool, str]:
     """
     Determine if the product is buyable based on page content.
     
     Args:
         html: HTML content of the product page
+        product_type: Type of product site ("japanblue" or "shopify")
         
     Returns:
         Tuple of (buyable: bool, reason: str)
     """
     soup = BeautifulSoup(html, "html.parser")
     page_text = soup.get_text().lower()
+    html_lower = html.lower()
     
+    # Shopify-specific detection (The Cultured Cup)
+    if product_type == "shopify":
+        # Extract variant ID from URL if present
+        variant_id = None
+        if "variant=" in url:
+            try:
+                variant_id = url.split("variant=")[1].split("&")[0].split("#")[0]
+            except:
+                pass
+        
+        # Check for variant-specific availability in JSON data
+        # Shopify stores product data in JSON-LD or script tags
+        
+        # Look for variant data in various formats
+        # Pattern 1: "variants":[...] with availability info
+        variant_patterns = [
+            r'"variants"\s*:\s*\[([^\]]+)\]',
+            r'"variant"\s*:\s*\{([^}]+)\}',
+        ]
+        
+        # Check for the specific variant's availability
+        if variant_id:
+            # Look for variant ID in the HTML with availability info
+            # Common patterns: "id":27890666602598 with "available":false
+            variant_available_pattern = rf'"id"\s*:\s*{variant_id}[^}}]*"available"\s*:\s*(true|false)'
+            variant_inventory_pattern = rf'"id"\s*:\s*{variant_id}[^}}]*"inventory_quantity"\s*:\s*(\d+)'
+            variant_available_text_pattern = rf'{variant_id}[^<]*"available"[^<]*false'
+            
+            # Check if variant is marked as unavailable
+            if re.search(variant_available_pattern, html, re.IGNORECASE):
+                match = re.search(variant_available_pattern, html, re.IGNORECASE)
+                if match and match.group(1).lower() == "false":
+                    return False, f"Variant {variant_id} marked as unavailable"
+            
+            # Check inventory quantity
+            if re.search(variant_inventory_pattern, html, re.IGNORECASE):
+                match = re.search(variant_inventory_pattern, html, re.IGNORECASE)
+                if match and int(match.group(1)) == 0:
+                    return False, f"Variant {variant_id} has zero inventory"
+            
+            # Check for "available":false near variant ID (but be more specific)
+            # Only match if it's in a proper JSON structure
+            variant_json_pattern = rf'{{[^}}]*"id"\s*:\s*{variant_id}[^}}]*"available"\s*:\s*false[^}}]*}}'
+            if re.search(variant_json_pattern, html, re.IGNORECASE):
+                return False, f"Variant {variant_id} marked as unavailable in JSON"
+        
+        # Check for general "out of stock" indicators for the selected variant
+        # Look for "Out of stock" text that appears after variant selection
+        # But only if it's clearly for the selected variant
+        if variant_id:
+            # Check if the variant ID appears with "out of stock":true
+            variant_oot_pattern = rf'{variant_id}[^}}]*"out of stock"\s*:\s*true'
+            if re.search(variant_oot_pattern, html_lower):
+                return False, f"Variant {variant_id} marked as out of stock"
+        
+        # Check for "Out of stock" text in the visible page content
+        # But be more careful - only flag if it's clearly for the selected variant
+        # Skip this check if we have variant-specific data above
+        
+        # Check for disabled add to cart buttons in Shopify
+        add_to_cart_disabled = False
+        # Look for disabled buttons with various selectors
+        disabled_selectors = [
+            'button[disabled]',
+            'button[disabled="disabled"]',
+            'input[type="submit"][disabled]',
+            '[class*="disabled"][class*="cart"]',
+        ]
+        for selector in disabled_selectors:
+            if soup.select(selector):
+                add_to_cart_disabled = True
+                break
+        
+        # Also check for "Sold out" text which is common in Shopify
+        if "sold out" in page_text.lower():
+            return False, "Sold out message found"
+        
+        if add_to_cart_disabled and 'add to cart' in page_text:
+            return False, "Add-to-cart button disabled"
+        
+        # If we get here and page loaded, check for positive availability indicators
+        if len(page_text) > 100:
+            # Look for positive indicators like "Add to cart" button that's enabled
+            add_to_cart_buttons = soup.find_all(['button', 'input'], string=re.compile('add to cart', re.I))
+            enabled_button_found = False
+            if add_to_cart_buttons:
+                # Check if any button is not disabled
+                for btn in add_to_cart_buttons:
+                    if not btn.get('disabled') and not btn.get('aria-disabled'):
+                        enabled_button_found = True
+                        break
+            
+            # If we found an enabled add-to-cart button, assume buyable
+            if enabled_button_found:
+                return True, "Add-to-cart button found and enabled (Shopify)"
+            
+            # If variant ID was checked and we didn't find negative indicators, assume available
+            # (This handles cases where the variant is available but detection patterns didn't match)
+            if variant_id:
+                # We checked for negative indicators above, if none found and page loaded, assume available
+                return True, f"Variant {variant_id} appears available (no negative indicators found)"
+            
+            # Default to NOT_BUYABLE if we can't determine
+            return False, "Unable to confirm availability (Shopify - no clear indicators)"
+        else:
+            return False, "Page content too short"
+    
+    # Japan Blue Jeans detection (original logic)
     # Check for "Out of Stock" text (case-insensitive)
     if "out of stock" in page_text:
         return False, "Out of Stock message found"
@@ -184,37 +306,40 @@ def load_state(state_file: str) -> dict:
         state_file: Path to state file
         
     Returns:
-        State dictionary with default values if file doesn't exist
+        State dictionary with per-product status tracking
     """
     if not os.path.exists(state_file):
-        return {
-            "last_status": None,
-            "last_checked_at": None,
-            "last_notified_at": None,
-        }
+        return {"products": {}}
     
     try:
         with open(state_file, "r") as f:
-            return json.load(f)
+            state = json.load(f)
+            # Migrate old format to new format if needed
+            if "last_status" in state and "products" not in state:
+                # Old format - migrate to new format
+                return {"products": {}}
+            return state
     except (json.JSONDecodeError, IOError) as e:
         # Return default state if file is corrupted
-        return {
-            "last_status": None,
-            "last_checked_at": None,
-            "last_notified_at": None,
-        }
+        return {"products": {}}
 
 
-def save_state(state_file: str, status: str, notified: bool = False):
+def save_state(state_file: str, product_name: str, status: str, notified: bool = False):
     """
     Save current state to JSON file.
     
     Args:
         state_file: Path to state file
+        product_name: Name/identifier of the product
         status: Current status ("BUYABLE" or "NOT_BUYABLE")
         notified: Whether notification was sent
     """
-    state = {
+    state = load_state(state_file)
+    
+    if "products" not in state:
+        state["products"] = {}
+    
+    state["products"][product_name] = {
         "last_status": status,
         "last_checked_at": datetime.now().isoformat(),
         "last_notified_at": datetime.now().isoformat() if notified else None,
@@ -224,7 +349,7 @@ def save_state(state_file: str, status: str, notified: bool = False):
         json.dump(state, f, indent=2)
 
 
-def send_discord_notification(webhook_url: str, url: str, reason: str, verbose: bool = False) -> bool:
+def send_discord_notification(webhook_url: str, product_name: str, url: str, reason: str, verbose: bool = False) -> bool:
     """
     Send Discord notification via webhook.
     
@@ -239,7 +364,7 @@ def send_discord_notification(webhook_url: str, url: str, reason: str, verbose: 
     """
     try:
         content = (
-            f"🛒 **Japan Blue Jeans Restock Alert**\n\n"
+            f"🛒 **Restock Alert: {product_name}**\n\n"
             f"**Status:** BUYABLE\n"
             f"**Reason:** {reason}\n"
             f"**URL:** {url}"
@@ -265,6 +390,7 @@ def maybe_notify(
     previous_status: Optional[str],
     current_status: str,
     webhook_url: Optional[str],
+    product_name: str,
     url: str,
     reason: str,
     dry_run: bool,
@@ -277,6 +403,7 @@ def maybe_notify(
         previous_status: Previous status or None
         current_status: Current status
         webhook_url: Discord webhook URL or None
+        product_name: Name of the product
         url: Product URL
         reason: Reason for current status
         dry_run: If True, don't actually send notifications
@@ -294,10 +421,10 @@ def maybe_notify(
         
         if dry_run:
             if verbose:
-                print(f"[DRY RUN] Would send notification: {reason}", file=sys.stderr)
+                print(f"[DRY RUN] Would send notification for {product_name}: {reason}", file=sys.stderr)
             return True
         
-        return send_discord_notification(webhook_url, url, reason, verbose)
+        return send_discord_notification(webhook_url, product_name, url, reason, verbose)
     
     return False
 
@@ -305,12 +432,12 @@ def maybe_notify(
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description="Monitor Japan Blue Jeans product page for restock availability"
+        description="Monitor product pages for restock availability"
     )
     parser.add_argument(
         "--url",
-        default=DEFAULT_URL,
-        help=f"Product URL to monitor (default: {DEFAULT_URL[:50]}...)",
+        default=None,
+        help="Override: monitor a single URL instead of all products",
     )
     parser.add_argument(
         "--dry-run",
@@ -337,51 +464,74 @@ def main():
     if args.verbose and not webhook_url:
         print("DISCORD_WEBHOOK_URL not set; notifications disabled", file=sys.stderr)
     
-    try:
-        # Load previous state
-        state = load_state(args.state_file)
-        previous_status = state.get("last_status")
+    # Load previous state
+    state = load_state(args.state_file)
+    
+    # Determine which products to check
+    if args.url:
+        # Single URL override mode (backward compatibility)
+        products_to_check = [{"name": "Custom URL", "url": args.url, "type": "japanblue"}]
+    else:
+        # Check all configured products
+        products_to_check = PRODUCTS
+    
+    all_successful = True
+    
+    # Check each product
+    for product in products_to_check:
+        product_name = product["name"]
+        product_url = product["url"]
+        product_type = product.get("type", "japanblue")
         
-        if args.verbose:
-            print(f"Previous status: {previous_status}", file=sys.stderr)
-        
-        # Fetch and analyze page
-        html = fetch_html(args.url, args.verbose)
-        buyable, reason = get_buyable_status(html)
-        
-        # Determine status string
-        current_status = "BUYABLE" if buyable else "NOT_BUYABLE"
-        
-        # Print result (exactly one line)
-        print(f"{current_status} - {reason}")
-        
-        # Check if we should notify
-        notified = maybe_notify(
-            previous_status,
-            current_status,
-            webhook_url,
-            args.url,
-            reason,
-            args.dry_run,
-            args.verbose,
-        )
-        
-        # Save state
-        save_state(args.state_file, current_status, notified)
-        
-        # Exit with success code (0) for both BUYABLE and NOT_BUYABLE
-        # Only exit with error code (1) for actual failures
-        sys.exit(0)
-        
-    except requests.RequestException as e:
-        print(f"NOT_BUYABLE - Network error: {e}", file=sys.stderr)
-        sys.exit(1)
-    except Exception as e:
-        print(f"NOT_BUYABLE - Unexpected error: {e}", file=sys.stderr)
-        if args.verbose:
-            import traceback
-            traceback.print_exc()
-        sys.exit(1)
+        try:
+            if args.verbose:
+                print(f"\nChecking {product_name}...", file=sys.stderr)
+            
+            # Get previous status for this product
+            product_state = state.get("products", {}).get(product_name, {})
+            previous_status = product_state.get("last_status")
+            
+            if args.verbose:
+                print(f"Previous status: {previous_status}", file=sys.stderr)
+            
+            # Fetch and analyze page
+            html = fetch_html(product_url, args.verbose)
+            buyable, reason = get_buyable_status(html, product_type, product_url)
+            
+            # Determine status string
+            current_status = "BUYABLE" if buyable else "NOT_BUYABLE"
+            
+            # Print result (one line per product)
+            print(f"{product_name}: {current_status} - {reason}")
+            
+            # Check if we should notify
+            notified = maybe_notify(
+                previous_status,
+                current_status,
+                webhook_url,
+                product_name,
+                product_url,
+                reason,
+                args.dry_run,
+                args.verbose,
+            )
+            
+            # Save state for this product
+            save_state(args.state_file, product_name, current_status, notified)
+            
+        except requests.RequestException as e:
+            print(f"{product_name}: NOT_BUYABLE - Network error: {e}", file=sys.stderr)
+            all_successful = False
+        except Exception as e:
+            print(f"{product_name}: NOT_BUYABLE - Unexpected error: {e}", file=sys.stderr)
+            if args.verbose:
+                import traceback
+                traceback.print_exc()
+            all_successful = False
+    
+    # Exit with success code (0) if all checks completed
+    # Only exit with error code (1) for actual failures
+    sys.exit(0 if all_successful else 1)
 
 
 if __name__ == "__main__":
